@@ -1,0 +1,51 @@
+# Copia pubblica fatta da tools/costruzioni_pubbliche.py del progetto privato: non cambiarla qui.
+# Il codice viene da zonerosse/registra-lezione-codice (chiave CODICE_TOKEN); i risultati delle prove tornano li'.
+name: Prova mini finestra
+
+# Si lancia a mano (o da Claude): apre il programma vero su Windows e controlla la mini finestra.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Ramo del codice (progetto privato)
+        default: main
+
+permissions:
+  contents: write
+
+jobs:
+  prova:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: zonerosse/registra-lezione-codice
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ secrets.CODICE_TOKEN }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Installa le librerie
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Prova
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          python tools/prova_mini.py
+          Get-Content prova_mini/esito.txt -Encoding utf8
+      - name: Salva i risultati nel ramo "prova-mini"
+        if: always()
+        shell: pwsh
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          New-Item -ItemType Directory -Force risultati | Out-Null
+          Copy-Item prova_mini/* risultati/ -ErrorAction SilentlyContinue
+          git checkout --orphan prova-mini
+          git rm -rf --cached . | Out-Null
+          git add -f risultati
+          git commit -m "Risultati prova mini finestra"
+          git push -f origin prova-mini

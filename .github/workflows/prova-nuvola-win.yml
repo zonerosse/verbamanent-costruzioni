@@ -1,0 +1,31 @@
+# Copia pubblica fatta da tools/costruzioni_pubbliche.py del progetto privato: non cambiarla qui.
+# Il codice viene da zonerosse/registra-lezione-codice (chiave CODICE_TOKEN); i risultati delle prove tornano li'.
+name: prova Sincronizza fuori casa su Windows
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Ramo del codice (progetto privato)
+        default: main
+
+jobs:
+  prova:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: zonerosse/registra-lezione-codice
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ secrets.CODICE_TOKEN }}
+        with: {ref: "${{ inputs.ref }}"}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -r requirements.txt
+      - shell: bash
+        run: |
+          set +e
+          python tools/prova_nuvola.py > esito.txt 2>&1
+          rc=$?
+          cat esito.txt
+          echo "::notice::$(tail -12 esito.txt | tr '\n' '|' | sed 's/%/%25/g')"
+          exit $rc

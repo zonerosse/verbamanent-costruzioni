@@ -1,0 +1,58 @@
+# Copia pubblica fatta da tools/costruzioni_pubbliche.py del progetto privato: non cambiarla qui.
+# Il codice viene da zonerosse/registra-lezione-codice (chiave CODICE_TOKEN); i risultati delle prove tornano li'.
+name: prova aggiornamento leggero su Windows (programma vecchio + codice nuovo)
+# Come sul PC di Lorenzo: il programma completo dell'ultima versione pubblicata (exe e librerie di allora) con la cartella
+# «app» nuova, cioe' quello che porta il tasto Aggiorna. Si fa partire l'exe con --prova: deve dire TUTTO A POSTO.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: versione pubblicata da cui partire
+        default: '4.45'
+      ref:
+        description: Ramo del codice (progetto privato)
+        default: main
+
+jobs:
+  prova:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: zonerosse/registra-lezione-codice
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ secrets.CODICE_TOKEN }}
+      - name: Programma vecchio, codice nuovo
+        shell: pwsh
+        run: |
+          $v = "${{ inputs.base }}"
+          Invoke-WebRequest "https://github.com/zonerosse/registra-lezione/releases/download/v$v/RegistraLezione-$v.zip" -OutFile vecchio.zip
+          Expand-Archive vecchio.zip -DestinationPath vecchio
+          $dest = (Get-ChildItem vecchio -Directory | Select-Object -First 1).FullName
+          Remove-Item "$dest/app" -Recurse -Force
+          Copy-Item app "$dest/app" -Recurse
+          Get-ChildItem "$dest/app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+          $exe = (Get-ChildItem $dest -Filter *.exe | Where-Object { $_.Name -notmatch "unins" } | Select-Object -First 1).FullName
+          Write-Host "exe: $exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "--prova" -Wait -PassThru
+          $esito = ""
+          foreach ($f in "prova_avvio.txt", "errore_avvio.txt") {
+            if (Test-Path "$dest/$f") { $esito += "== $f ==`n" + (Get-Content "$dest/$f" -Raw -Encoding utf8) + "`n" }
+          }
+          if (-not $esito) { $esito = "Nessun file di esito: l'exe non e' partito (codice $($p.ExitCode))" }
+          Write-Host $esito
+          $msg = ($esito -replace "%", "%25" -replace "`r", "" -replace "`n", "%0A")
+          if ($p.ExitCode -ne 0 -or $esito -notmatch "TUTTO A POSTO") { Write-Host "::error title=Aggiornamento leggero::$msg"; exit 1 }
+          Write-Host "::notice title=Aggiornamento leggero::$msg"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Aggiorna senza i video della guida (Windows)
+        shell: pwsh
+        run: |
+          $t = (python tools/prova_agg_video.py 2>&1 | Out-String)
+          Write-Host $t
+          $msg = ($t -replace "%", "%25" -replace "`r", "" -replace "`n", "%0A")
+          if ($LASTEXITCODE -ne 0 -or $t -notmatch "TUTTO A POSTO") { Write-Host "::error title=Aggiorna senza video::$msg"; exit 1 }
+          Write-Host "::notice title=Aggiorna senza video::$msg"

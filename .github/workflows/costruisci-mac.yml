@@ -1,0 +1,213 @@
+# Copia pubblica fatta da tools/costruzioni_pubbliche.py del progetto privato: non cambiarla qui.
+# Il codice viene da zonerosse/registra-lezione-codice (chiave CODICE_TOKEN); i risultati delle prove tornano li'.
+name: Costruisci Mac
+
+# Costruisce Verba Manent IA e Scripta Manent per Mac (Apple e Intel): l'app (.app) e il file da installare (.dmg).
+# Con i segreti MAC_CERT_P12 (certificato Developer ID in base64) e MAC_CERT_PASSWORD le app si firmano e i .dmg
+# passano dal controllo di Apple (notarizzazione, con la chiave ASC_* gia' usata per l'iPhone); senza, restano senza firma.
+# I .dmg finiscono nella release di prova «app-mac» (nessuno li riceve con Aggiorna).
+# Il codice del programma (cartella app) va dentro l'app; al primo avvio si copia in ~/Library/Application Support,
+# dove il tasto Aggiorna lo puo' cambiare (vedi avvio.py).
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Ramo del codice (progetto privato)
+        default: mac
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15, arch: apple}
+          - {runner: macos-15-intel, arch: intel}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: zonerosse/registra-lezione-codice
+          ref: ${{ inputs.ref || 'mac' }}
+          token: ${{ secrets.CODICE_TOKEN }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Identificativi del cloud
+        env:
+          NUOVOLA_APP: ${{ secrets.NUVOLA_APP }}
+        run: if [ -n "$NUOVOLA_APP" ]; then printf '%s' "$NUOVOLA_APP" > app/nuvola_app.json; fi
+      - name: Librerie
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-mac.txt pyinstaller==6.22.3
+          for f in app/*.py *.py; do python -m py_compile "$f"; done
+      - name: Il pezzo per macOS (rl-cattura)
+        run: swiftc -O mac/cattura.swift -o mac/rl-cattura
+      - name: Icone
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "tools")
+          import logo, logo_scripta
+          for nome, m in (("verba", logo), ("scripta", logo_scripta)):
+              import os
+              os.makedirs(f"/tmp/{nome}.iconset", exist_ok=True)
+              for s in (16, 32, 64, 128, 256, 512, 1024):
+                  im = m.icona(s)
+                  if s <= 512: im.save(f"/tmp/{nome}.iconset/icon_{s}x{s}.png")
+                  if s >= 32: im.save(f"/tmp/{nome}.iconset/icon_{s // 2}x{s // 2}@2x.png")
+          PY
+          iconutil -c icns /tmp/verba.iconset -o /tmp/verba.icns
+          iconutil -c icns /tmp/scripta.iconset -o /tmp/scripta.icns
+      - name: Costruisci l'app
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name "Verba Manent IA" --icon /tmp/verba.icns \
+            --osx-bundle-identifier it.puntowebferrara.verbamanent.mac \
+            --add-binary "mac/rl-cattura:." \
+            --collect-all faster_whisper --collect-all ctranslate2 --collect-all soundcard \
+            --collect-all imageio_ffmpeg --collect-all onnxruntime --collect-all av \
+            --collect-all tokenizers --collect-all fpdf --collect-all PIL --collect-all mss \
+            --collect-all huggingface_hub --collect-all webview --collect-all pypdfium2 --collect-all yt_dlp \
+            --collect-submodules fontTools --collect-submodules numpy \
+            --hidden-import dipendenze avvio.py
+          A="dist/Verba Manent IA.app"
+          mkdir -p "$A/Contents/Resources/app"
+          cp -R app/. "$A/Contents/Resources/app/"
+          find "$A/Contents/Resources/app" -name __pycache__ -prune -exec rm -rf {} +
+          # in Contents/MacOS ci va solo codice (lo vuole la firma di Apple): i testi in Resources
+          cp LEGGIMI.txt app/LICENZE.txt "$A/Contents/Resources/" || true
+          P="$A/Contents/Info.plist"
+          V=$(python -c "import json;print(json.load(open('app/versione.json'))['versione'])")
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $V" "$P"
+          plutil -replace NSMicrophoneUsageDescription -string "Serve per registrare la lezione o la riunione in aula." "$P"
+          plutil -replace NSScreenCaptureUsageDescription -string "Serve per registrare l'audio e le slide della lezione online." "$P"
+          plutil -replace LSMinimumSystemVersion -string "13.0" "$P"
+          ls "$A/Contents/MacOS" "$A/Contents/Frameworks" | head -50
+      - name: Scripta Manent (la stessa app, edizione scripta)
+        run: |
+          cp -R "dist/Verba Manent IA.app" "dist/Scripta Manent.app"
+          S="dist/Scripta Manent.app"
+          echo '{"edizione": "scripta"}' > "$S/Contents/Resources/edizione.json"
+          cp /tmp/scripta.icns "$S/Contents/Resources/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$S/Contents/Info.plist")"
+          P="$S/Contents/Info.plist"
+          plutil -replace CFBundleName -string "Scripta Manent" "$P"
+          plutil -replace CFBundleDisplayName -string "Scripta Manent" "$P"
+          plutil -replace CFBundleIdentifier -string "it.puntowebferrara.scriptamanent.mac" "$P"
+      - name: Firma (certificato Developer ID)
+        env:
+          P12: ${{ secrets.MAC_CERT_P12 }}
+          PW: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          if [ -z "$P12" ]; then echo "Nessun certificato: app senza firma"; exit 0; fi
+          mkdir -p esito-mac; exec > >(tee -a esito-mac/firma.txt) 2>&1
+          # MAI «set -x» qui: scriverebbe certificato e password nel resoconto pubblico (successo il 27/10/2026)
+          echo "lunghezza P12: ${#P12}, lunghezza password: ${#PW}"
+          if [ ${#P12} -lt 1000 ]; then echo "MAC_CERT_P12 sembra la password (troppo corto): i due segreti sono invertiti?"; exit 1; fi
+          KC="$RUNNER_TEMP/firma.keychain-db"; KP=$(uuidgen)
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/f.p12"
+          ls -la "$RUNNER_TEMP/f.p12"
+          security import "$RUNNER_TEMP/f.p12" -k "$KC" -P "$PW" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/f.p12"
+          curl -sfL -o "$RUNNER_TEMP/g2.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer && security import "$RUNNER_TEMP/g2.cer" -k "$KC" || true
+          curl -sfL -o "$RUNNER_TEMP/g1.cer" https://www.apple.com/certificateauthority/DeveloperIDCA.cer && security import "$RUNNER_TEMP/g1.cer" -k "$KC" || true
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security find-identity -p codesigning "$KC"
+          ID=$(security find-identity -p codesigning "$KC" | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"')
+          echo "Firma con: $ID"; [ -n "$ID" ]
+          echo "FIRMA_ID=$ID" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/ent.plist" <<'XML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>com.apple.security.cs.allow-jit</key><true/>
+            <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+            <key>com.apple.security.cs.disable-library-validation</key><true/>
+            <key>com.apple.security.device.audio-input</key><true/>
+          </dict></plist>
+          XML
+          for A in "Verba Manent IA" "Scripta Manent"; do
+            # dall'interno verso l'esterno: prima ogni libreria e programma, poi l'app intera
+            find "dist/$A.app/Contents" -type f ! -path "*/Resources/app/*" | while IFS= read -r f; do
+              file -b "$f" | grep -q Mach-O && printf '%s\t%s\n' "${#f}" "$f"
+            done | sort -rn | cut -f2- > /tmp/da-firmare.txt
+            echo "$A: $(wc -l < /tmp/da-firmare.txt) file da firmare"
+            while IFS= read -r f; do
+              codesign --force --timestamp --options runtime --entitlements "$RUNNER_TEMP/ent.plist" --sign "$ID" "$f" || { echo "ERRORE su $f"; exit 1; }
+            done < /tmp/da-firmare.txt
+            codesign --force --timestamp --options runtime --entitlements "$RUNNER_TEMP/ent.plist" --sign "$ID" "dist/$A.app"
+            codesign --verify --deep --strict --verbose=2 "dist/$A.app"
+          done
+      - name: Prova le due app
+        run: |
+          mkdir -p esito-mac
+          for A in "Verba Manent IA" "Scripta Manent"; do
+            E=$(ls "dist/$A.app/Contents/MacOS/" | grep -v -E '\.(json|txt)$' | head -1)
+            # sul Mac non c'e' «timeout»: la prova ha 10 minuti, poi si ferma
+            ("dist/$A.app/Contents/MacOS/$E" --prova > "esito-mac/uscita-$E.txt" 2>&1; echo "codice $?" >> "esito-mac/uscita-$E.txt") &
+            PID=$!; for i in $(seq 1 600); do kill -0 $PID 2>/dev/null || break; sleep 1; done; kill $PID 2>/dev/null || true
+            tail -60 "esito-mac/uscita-$E.txt"
+            find "$HOME/Library/Application Support" dist -name "prova_avvio.txt" -o -name "errore_avvio.txt" 2>/dev/null | tee -a esito-mac/dove.txt
+            ls -la "$HOME/Library/Application Support/" > esito-mac/application-support.txt 2>&1 || true
+            D=$([ "$A" = "Scripta Manent" ] && echo ScriptaManent || echo VerbaManent)
+            R="$HOME/Library/Application Support/$D/programma"
+            echo "== $A" | tee -a esito-mac/prova.txt
+            cat "$R/prova_avvio.txt" "$R/errore_avvio.txt" 2>/dev/null | tee -a esito-mac/prova.txt
+          done
+          grep -c "TUTTO A POSTO" esito-mac/prova.txt
+      - name: I file da installare (.dmg)
+        run: |
+          V=$(python -c "import json;print(json.load(open('app/versione.json'))['versione'])")
+          for A in "Verba Manent IA" "Scripta Manent"; do
+            N=$(echo "$A" | tr -d ' ')
+            mkdir -p "/tmp/dmg-$N" && cp -R "dist/$A.app" "/tmp/dmg-$N/" && ln -s /Applications "/tmp/dmg-$N/Applicazioni"
+            hdiutil create -volname "$A" -srcfolder "/tmp/dmg-$N" -ov -format UDZO "$N-${{ matrix.arch }}.dmg"
+            if [ -n "$FIRMA_ID" ]; then codesign --force --timestamp --sign "$FIRMA_ID" "$N-${{ matrix.arch }}.dmg"; fi
+          done
+          ls -la *.dmg
+      - name: Controllo di Apple (notarizzazione)
+        if: env.FIRMA_ID != ''
+        env:
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+          P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          mkdir -p esito-mac
+          printf '%s' "$P8" > "$RUNNER_TEMP/AuthKey.p8"
+          for D in *.dmg; do
+            xcrun notarytool submit "$D" --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$KEY_ID" --issuer "$ISSUER" \
+              --wait --timeout 90m --output-format json | tee "esito-mac/notarizza-$D.json"
+            SID=$(python -c "import json,sys;print(json.load(open(sys.argv[1]))['id'])" "esito-mac/notarizza-$D.json")
+            xcrun notarytool log "$SID" --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$KEY_ID" --issuer "$ISSUER" "esito-mac/notarizza-$D-log.json" || true
+            grep -q '"status":"Accepted"' "esito-mac/notarizza-$D.json" || grep -q '"status" *: *"Accepted"' "esito-mac/notarizza-$D.json" || { echo "Apple ha rifiutato $D"; exit 1; }
+            xcrun stapler staple "$D"
+            spctl -a -vvv -t install "$D" 2>&1 | tee -a esito-mac/gatekeeper.txt
+          done
+          rm -f "$RUNNER_TEMP/AuthKey.p8"
+      - name: Nella release di prova «app-mac»
+        # I file da installare vanno nel progetto PUBBLICO zonerosse/registra-lezione (28/10/2026): questo, con il codice, e' privato.
+        env:
+          GH_TOKEN: ${{ secrets.CODICE_TOKEN }}
+          GH_REPO: zonerosse/registra-lezione
+        run: |
+          gh release view app-mac >/dev/null 2>&1 || gh release create app-mac --prerelease --title "Mac (prova)" --notes "Prove per Mac."
+          gh release upload app-mac *.dmg --clobber
+      - name: Pubblica l'esito
+        if: always()
+        run: |
+          mkdir -p esito-mac && date -u > esito-mac/quando.txt
+          git config user.name "github-actions"; git config user.email "github-actions@users.noreply.github.com"
+          B="esito-mac-${{ matrix.arch }}"
+          # in una cartella a parte: la cartella di lavoro piena di file della costruzione non disturba
+          rm -rf /tmp/pub && mkdir -p /tmp/pub && cp -R esito-mac /tmp/pub/ && cd /tmp/pub && git init -q && git checkout -q -b "$B"
+          git config user.name "github-actions"; git config user.email "github-actions@users.noreply.github.com"
+          git add -A && git commit -q -m "Costruzione Mac ${{ matrix.arch }}"
+          git push -q -f "https://x-access-token:${{ secrets.CODICE_TOKEN }}@github.com/zonerosse/registra-lezione-codice.git" "$B"

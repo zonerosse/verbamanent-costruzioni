@@ -1,0 +1,42 @@
+# Copia pubblica fatta da tools/costruzioni_pubbliche.py del progetto privato: non cambiarla qui.
+# Il codice viene da zonerosse/registra-lezione-codice (chiave CODICE_TOKEN); i risultati delle prove tornano li'.
+name: prova PDF del docente su Windows
+on:
+  workflow_dispatch:
+    inputs:
+      ramo:
+        description: Ramo temporaneo con un PDF vero da provare (vero.pdf), da cancellare dopo
+        default: ''
+      ref:
+        description: Ramo del codice (progetto privato)
+        default: main
+
+jobs:
+  prova:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: zonerosse/registra-lezione-codice
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ secrets.CODICE_TOKEN }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install Pillow==12.3.0 fpdf2==2.8.9 numpy cryptography   # PDFium NON installato: si usa quello in app/_vendor/pdfium_win, come sul PC aggiornato
+      - shell: bash
+        run: |
+          set +e
+          python tools/prove/prova_pdf_win.py > esito.txt 2>&1
+          rc=$?
+          cat esito.txt
+          echo "::notice::$(grep -v '^$' esito.txt | tr '\n' '|' | sed 's/%/%25/g')"
+          exit $rc
+      - name: Nomi lunghi (Windows si ferma a 260 caratteri)
+        if: always()
+        run: python tools/prova_nomi_lunghi.py
+      - if: inputs.ramo != ''
+        shell: bash
+        run: |
+          git fetch --depth 1 origin "${{ inputs.ramo }}"
+          git show FETCH_HEAD:vero.pdf > "$RUNNER_TEMP/vero.pdf"
+          python tools/prove/prova_pdf_file.py "$RUNNER_TEMP/vero.pdf"

@@ -1,0 +1,96 @@
+# Copia pubblica fatta da tools/costruzioni_pubbliche.py del progetto privato: non cambiarla qui.
+# Il codice viene da zonerosse/registra-lezione-codice (chiave CODICE_TOKEN); i risultati delle prove tornano li'.
+name: Aggiornamento leggero Android
+
+# Per le modifiche a pagine, testi, guida e motore Python: niente app nuova da costruire.
+# Prova l'app senza emulatore e pubblica solo i file (contenuto.zip): Lorenzo li prende con «Aggiorna l'app».
+on:
+  workflow_dispatch:
+    inputs:
+      edizione:
+        description: Per chi è l'aggiornamento (solo quella app lo riceve)
+        type: choice
+        options:
+        - entrambe
+        - verba
+        - scripta
+        default: entrambe
+      ref:
+        description: Ramo del codice (progetto privato)
+        default: main
+
+permissions:
+  contents: write
+
+jobs:
+  leggero:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: zonerosse/registra-lezione-codice
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ secrets.CODICE_TOKEN }}
+      # gli identificativi del programma presso Google (cloud): nella cassaforte di GitHub, non nel codice pubblico
+      - name: Identificativi del cloud
+        env:
+          NUVOLA_APP: ${{ secrets.NUVOLA_APP }}
+        run: |
+          if [ -n "$NUVOLA_APP" ]; then printf '%s' "$NUVOLA_APP" > app/nuvola_app.json; fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Il programma per il telefono
+        run: |
+          bash tools/prova_android/prepara_rl.sh /tmp/rl
+          # i video della guida (circa 37 MB) a parte: l'app li scarica solo se cambiano (01/11/2026: 41 -> 4 MB)
+          (cd /tmp/rl && zip -qr -X "$GITHUB_WORKSPACE/contenuto.zip" . -x 'interfaccia/video/*')
+          (cd /tmp/rl/interfaccia/video && zip -qr -X "$GITHUB_WORKSPACE/video-android.zip" .)
+          python3 -c "import sys; sys.path.insert(0, 'app'); import aggiorna; print(aggiorna.impronta_video('/tmp/rl/interfaccia/video'))" > impronta_video.txt
+          [ -s impronta_video.txt ] || { echo "impronta dei video vuota"; exit 1; }
+          ls -la contenuto.zip video-android.zip
+      - name: Prova dell'app senza emulatore
+        run: |
+          pip install -q numpy pillow fpdf2==2.8.9 imageio-ffmpeg onnxruntime
+          (cd tools/prova_android/simula && npm install --no-save --silent playwright@1.47.2 && npx playwright install --with-deps chromium > /dev/null)
+          NODE_PATH=$PWD/tools/prova_android/simula/node_modules bash tools/prova_android/simula/prova.sh prova_simulata
+      - name: Pubblica i file nuovi
+        # I file da installare vanno nel progetto PUBBLICO zonerosse/registra-lezione (28/10/2026): questo, con il codice, e' privato.
+        env:
+          RILASCI_TOKEN: ${{ secrets.CODICE_TOKEN }}
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@users.noreply.github.com"
+          [ -n "$RILASCI_TOKEN" ] || { echo "Manca il segreto RILASCI_TOKEN (scaduto o tolto?)"; exit 1; }
+          git clone -q --depth 1 --branch android-app "https://x-access-token:${RILASCI_TOKEN}@github.com/zonerosse/registra-lezione.git" /tmp/pub
+          python3 - <<'PY'
+          import json, sys
+          nuova = json.load(open("android/versione.json"))
+          pub = json.load(open("/tmp/pub/versione-android.json"))
+          if int(nuova["codice"]) != int(pub["codice"]):
+              sys.exit("Questa versione cambia l'app (codice %s, pubblicata %s): serve «Prova Android» (app completa)" % (nuova["codice"], pub["codice"]))
+          if int(nuova["contenuto"]) <= int(pub.get("contenuto") or 0):
+              sys.exit("Alza «contenuto» in android/versione.json")
+          pub.update(versione=nuova["versione"], contenuto=nuova["contenuto"], novita=nuova["novita"], novita_en=nuova["novita_en"],
+                     zip="https://github.com/zonerosse/registra-lezione/raw/android-app/contenuto.zip",
+                     video=open("impronta_video.txt").read().strip(),
+                     zip_video="https://github.com/zonerosse/registra-lezione/raw/android-app/video-android.zip")
+          # solo l'app scelta vede l'aggiornamento: l'altra resta com'e' (prendera' tutto con il suo prossimo)
+          ed = "${{ inputs.edizione }}" or "entrambe"
+          if ed in ("entrambe", "verba"):
+              pub["contenuto_vm"] = nuova["contenuto"]
+          if ed in ("entrambe", "scripta"):
+              pub["contenuto_sm"] = nuova["contenuto"]
+              pub.update(novita_sm=nuova.get("novita_sm") or nuova["novita"], novita_sm_en=nuova.get("novita_sm_en") or nuova["novita_en"])
+          json.dump(pub, open("/tmp/pub/versione-android.json", "w"), ensure_ascii=False, indent=1)
+          PY
+          cp contenuto.zip /tmp/pub/contenuto.zip
+          cp video-android.zip /tmp/pub/video-android.zip
+          cd /tmp/pub
+          git add -f contenuto.zip video-android.zip versione-android.json
+          git commit -q -m "Aggiornamento leggero Android $(python3 -c "import json;print(json.load(open('versione-android.json'))['versione'])")"
+          git push origin HEAD:android-app

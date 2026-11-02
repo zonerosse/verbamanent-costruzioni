@@ -1,0 +1,23 @@
+# Copia pubblica fatta da tools/costruzioni_pubbliche.py del progetto privato: non cambiarla qui.
+# Il codice viene da zonerosse/registra-lezione-codice (chiave CODICE_TOKEN); i risultati delle prove tornano li'.
+name: prova rete Windows (hotspot)
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Ramo del codice (progetto privato)
+        default: main
+
+jobs:
+  prova:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: zonerosse/registra-lezione-codice
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ secrets.CODICE_TOKEN }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python tools/prove/prova_rete_win.py
+      - run: python tools/prova_sync_rete.py

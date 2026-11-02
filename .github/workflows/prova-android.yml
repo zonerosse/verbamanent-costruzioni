@@ -1,0 +1,170 @@
+# Copia pubblica fatta da tools/costruzioni_pubbliche.py del progetto privato: non cambiarla qui.
+# Il codice viene da zonerosse/registra-lezione-codice (chiave CODICE_TOKEN); i risultati delle prove tornano li'.
+name: Prova Android
+
+# Si lancia a mano (o da Claude): costruisce l'app Android, la prova su un telefono simulato
+# e mette l'APK nel ramo "android-app" (da li' l'app si aggiorna con «Aggiorna l'app»).
+on:
+  workflow_dispatch:
+    inputs:
+      pubblica:
+        description: Pubblica l'app (no = solo prova)
+        type: boolean
+        default: true
+      ref:
+        description: Ramo del codice (progetto privato)
+        default: main
+
+permissions:
+  contents: write
+
+jobs:
+  prova:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: zonerosse/registra-lezione-codice
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ secrets.CODICE_TOKEN }}
+      # gli identificativi del programma presso Google (cloud): nella cassaforte di GitHub, non nel codice pubblico
+      - name: Identificativi del cloud
+        env:
+          NUVOLA_APP: ${{ secrets.NUVOLA_APP }}
+        run: |
+          if [ -n "$NUVOLA_APP" ]; then printf '%s' "$NUVOLA_APP" > app/nuvola_app.json; fi
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Strumenti Android (NDK e CMake)
+        run: |
+          for i in 1 2 3; do   # a volte il sito di Google non risponde: riprovo
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null && break
+            sleep 30
+          done
+          [ -d "$ANDROID_HOME/ndk/27.2.12479018" ]
+      - name: Riconoscitore vocale (whisper.cpp)
+        run: |
+          git clone --depth 1 --branch v1.7.6 https://github.com/ggml-org/whisper.cpp android/app/src/main/cpp/whisper.cpp
+      - name: Il programma (stesso del PC) dentro l'app
+        run: bash tools/prova_android/prepara_rl.sh android/app/src/main/assets/rl contenuto.zip
+      - name: Costruisci l'app
+        working-directory: android
+        run: |
+          gradle assembleVerbaDebug assembleScriptaDebug --no-daemon -q
+          mkdir -p app/build/outputs/apk/debug
+          cp app/build/outputs/apk/verba/debug/app-verba-debug.apk app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/scripta/debug/app-scripta-debug.apk app/build/outputs/apk/debug/app-scripta-debug.apk
+          ls -la app/build/outputs/apk/debug/
+          echo "APK: $(du -m app/build/outputs/apk/debug/app-debug.apk | cut -f1) MB"
+      - name: Prova dell'app senza emulatore (motore e pagine veri, telefono finto)
+        id: simula
+        run: |
+          pip install -q numpy pillow fpdf2==2.8.9 imageio-ffmpeg onnxruntime
+          (cd tools/prova_android/simula && npm install --no-save --silent playwright@1.47.2 && npx playwright install --with-deps chromium > /dev/null)
+          NODE_PATH=$PWD/tools/prova_android/simula/node_modules bash tools/prova_android/simula/prova.sh prova_simulata
+      - name: "Pubblica l'app nel ramo android-app (da li' la prende «Aggiorna l'app»)"
+        if: steps.simula.outcome == 'success' && inputs.pubblica
+        env:
+          GH_TOKEN: ${{ secrets.CODICE_TOKEN }}
+          GH_REPO: zonerosse/registra-lezione
+        run: |
+          # I file da installare vanno nel progetto PUBBLICO zonerosse/registra-lezione (28/10/2026): questo, con il codice, e' privato.
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          mkdir -p /tmp/agg /tmp/apk
+          # l'app (piu' di 100 MB) va in una "release" a parte: nel ramo GitHub non ci sta.
+          # E' "prerelease", cosi' il programma per Windows non la scambia per un suo aggiornamento.
+          cp android/app/build/outputs/apk/debug/app-debug.apk /tmp/apk/RegistraLezione.apk
+          gh release view app-android > /dev/null 2>&1 || gh release create app-android --prerelease --latest=false \
+            --title "App Android (Verba Manent IA)" --notes "L'app per il telefono: si scarica da «Aggiorna l'app»."
+          cp android/app/build/outputs/apk/debug/app-scripta-debug.apk /tmp/apk/ScriptaManent.apk
+          gh release upload app-android /tmp/apk/RegistraLezione.apk /tmp/apk/ScriptaManent.apk --clobber
+          cp contenuto.zip /tmp/agg/contenuto.zip
+          python3 - <<'PY'
+          import json
+          v = json.load(open("android/versione.json"))
+          v["apk"] = "https://github.com/zonerosse/registra-lezione/releases/download/app-android/RegistraLezione.apk"
+          v["apk_sm"] = "https://github.com/zonerosse/registra-lezione/releases/download/app-android/ScriptaManent.apk"
+          v["zip"] = "https://github.com/zonerosse/registra-lezione/raw/android-app/contenuto.zip"
+          v["contenuto_vm"] = v["contenuto_sm"] = v["contenuto"]      # app nuova: per tutte e due
+          v.setdefault("novita_sm", v["novita"]); v.setdefault("novita_sm_en", v["novita_en"])
+          json.dump(v, open("/tmp/agg/versione-android.json", "w"), ensure_ascii=False, indent=1)
+          PY
+          rm -rf /tmp/pubgit && mkdir /tmp/pubgit && cd /tmp/pubgit && git init -q -b android-app
+          cp /tmp/agg/* .
+          git add -f contenuto.zip versione-android.json
+          git commit -q -m "App Android $(python3 -c "import json;print(json.load(open('versione-android.json'))['versione'])")"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/zonerosse/registra-lezione.git" android-app
+          cd "$GITHUB_WORKSPACE"
+      - name: Riconoscitore vocale per la prova sul telefono simulato (scaricato una volta, poi tenuto da GitHub)
+        uses: actions/cache@v4
+        with:
+          path: ~/modello
+          key: ggml-small-q5_1-voci
+      - name: Scarica il riconoscitore se non c'e'
+        run: |
+          mkdir -p ~/modello
+          [ -s ~/modello/ggml-small-q5_1.bin ] || curl -sL -o ~/modello/ggml-small-q5_1.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin
+          [ -s ~/modello/voci_resnet34.onnx ] || curl -sL -o ~/modello/voci_resnet34.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx
+          ls -la ~/modello
+      - name: Attiva la virtualizzazione (per il telefono simulato)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Prova sul telefono simulato
+        id: prova1
+        continue-on-error: true
+        timeout-minutes: 40
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          target: default
+          emulator-boot-timeout: 900
+          cores: 4
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash tools/prova_android/prova.sh
+      - name: Prova sul telefono simulato (di nuovo, se il primo si e' staccato)
+        if: steps.prova1.outcome == 'failure'
+        continue-on-error: true
+        timeout-minutes: 40
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          target: default
+          emulator-boot-timeout: 900
+          cores: 4
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: rm -rf prova_android_out && bash tools/prova_android/prova.sh
+      - name: Salva i risultati delle prove nel ramo "prova-android"
+        if: always()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          mkdir -p /tmp/ris/simulata
+          cp -R prova_simulata/* /tmp/ris/simulata/ 2>/dev/null || true
+          cp -R prova_android_out/* /tmp/ris/ 2>/dev/null || true
+          git checkout -q -f --orphan prova-android
+          git rm -rf --cached . > /dev/null
+          rm -rf risultati; mkdir risultati; cp -R /tmp/ris/* risultati/ 2>/dev/null || true
+          git add -f risultati
+          git commit -q -m "Risultati prove Android"
+          git push -f origin prova-android

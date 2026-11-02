@@ -1,0 +1,222 @@
+# Copia pubblica fatta da tools/costruzioni_pubbliche.py del progetto privato: non cambiarla qui.
+# Il codice viene da zonerosse/registra-lezione-codice (chiave CODICE_TOKEN); i risultati delle prove tornano li'.
+name: Costruisci exe
+
+# Parte da solo a ogni push su main. Se la versione scritta in app/versione.json
+# e' gia' stata pubblicata non fa niente; se e' nuova costruisce l'exe, lo prova
+# e pubblica una "release" con:
+#   RegistraLezione-<versione>.zip  pacchetto completo (exe + librerie + app)
+#   aggiornamento.zip               solo la cartella app (per il tasto Aggiorna)
+#   versione.json                   numero di versione e novita'
+# 02/11/2026: le costruzioni girano nel progetto pubblico zonerosse/verbamanent-costruzioni (minuti gratis), qui solo a mano
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Ramo del codice (progetto privato)
+        default: main
+
+permissions:
+  contents: write
+
+# una costruzione alla volta: se ne parte un'altra mentre questa pubblica, aspetta in fila
+# (altrimenti la seconda trova la versione "nuova" e poi fallisce perche' intanto e' stata pubblicata)
+concurrency:
+  group: costruisci-exe
+  cancel-in-progress: false
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: zonerosse/registra-lezione-codice
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ secrets.CODICE_TOKEN }}
+      # gli identificativi del programma presso Google (cloud): nella cassaforte di GitHub, non nel codice pubblico
+      - name: Identificativi del cloud
+        env:
+          NUVOLA_APP: ${{ secrets.NUVOLA_APP }}
+        shell: pwsh
+        run: |
+          if ($env:NUVOLA_APP) { [IO.File]::WriteAllText("app/nuvola_app.json", $env:NUVOLA_APP) }
+
+      - name: Leggi la versione
+        id: v
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.CODICE_TOKEN }}
+          GH_REPO: zonerosse/registra-lezione
+        run: |
+          # I file da installare vanno nel progetto PUBBLICO zonerosse/registra-lezione (28/10/2026): questo, con il codice, e' privato.
+          $j = Get-Content app/versione.json -Raw -Encoding utf8 | ConvertFrom-Json
+          $tag = "v$($j.versione)"
+          "versione=$($j.versione)" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "La versione $tag esiste gia': niente da fare."
+            "nuova=0" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "Versione nuova: $tag"
+            "nuova=1" >> $env:GITHUB_OUTPUT
+          }
+          exit 0
+
+      - uses: actions/setup-python@v6
+        if: steps.v.outputs.nuova == '1'
+        with:
+          python-version: '3.12'
+
+      - name: Installa le librerie
+        if: steps.v.outputs.nuova == '1'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller==6.22.3
+          Get-ChildItem app/*.py, *.py | ForEach-Object { python -m py_compile $_.FullName; if ($LASTEXITCODE -ne 0) { exit 1 } }
+
+      - name: Prova Sincronizza fuori casa (cifratura, nomi nascosti, migrazione)
+        if: steps.v.outputs.nuova == '1'
+        shell: pwsh
+        run: |
+          python tools/prova_nuvola.py *>&1 | Tee-Object -FilePath esito_nuvola.txt
+          if ($LASTEXITCODE -ne 0) {
+            # il registro della prova nel ramo «esito-exe», cosi' si legge anche senza i log di GitHub
+            git config user.name "github-actions"; git config user.email "github-actions@users.noreply.github.com"
+            git fetch -q origin esito-exe 2>$null
+            git worktree add -q --detach C:/pub 2>$null
+            Push-Location C:/pub; git checkout -q --orphan esito-exe 2>$null; git rm -rqf . 2>$null; Pop-Location
+            Copy-Item esito_nuvola.txt C:/pub/
+            Push-Location C:/pub; git add -f esito_nuvola.txt; git commit -q -m "Prova Sincronizza fallita"; git push -q -f origin HEAD:esito-exe; Pop-Location
+            exit 1
+          }
+
+      - name: Prova Aggiorna senza i video della guida (scaricati a parte solo se cambiano)
+        if: steps.v.outputs.nuova == '1'
+        shell: pwsh
+        run: |
+          python tools/prova_agg_video.py *>&1 | Tee-Object -FilePath esito_agg_video.txt
+          $t = Get-Content esito_agg_video.txt -Raw
+          if ($LASTEXITCODE -ne 0 -or $t -notmatch "TUTTO A POSTO") { Write-Host "::error title=Prova Aggiorna senza video::$($t -replace "`r", '' -replace "`n", '%0A')"; exit 1 }
+
+      - name: Prova appunti scritti male da Claude
+        if: steps.v.outputs.nuova == '1'
+        shell: pwsh
+        run: |
+          python tools/prova_appunti_rotti.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Costruisci l'exe
+        if: steps.v.outputs.nuova == '1'
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed `
+            --name "Registra Lezione" --icon app/icona.ico `
+            --collect-all faster_whisper --collect-all ctranslate2 --collect-all soundcard `
+            --collect-all imageio_ffmpeg --collect-all onnxruntime --collect-all av `
+            --collect-all tokenizers --collect-all fpdf --collect-all PIL --collect-all mss --collect-all pypdfium2 --collect-all pypdfium2_raw `
+            --collect-all huggingface_hub --collect-all webview --collect-all clr_loader --collect-all pythonnet `
+            --collect-submodules fontTools --collect-submodules numpy `
+            --hidden-import dipendenze avvio.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Prova l'exe e prepara i pacchetti
+        if: steps.v.outputs.nuova == '1'
+        shell: pwsh
+        run: |
+          $v = "${{ steps.v.outputs.versione }}"
+          $dest = "dist/Registra Lezione"
+          Copy-Item app "$dest/app" -Recurse
+          Get-ChildItem "$dest/app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+          Copy-Item LEGGIMI.txt $dest
+          Copy-Item app/LICENZE.txt $dest
+
+          $p = Start-Process -FilePath "$dest/Registra Lezione.exe" -ArgumentList "--prova" -Wait -PassThru
+          $esito = ""
+          foreach ($f in "prova_avvio.txt", "errore_avvio.txt") {
+            if (Test-Path "$dest/$f") { $esito += "== $f ==`n" + (Get-Content "$dest/$f" -Raw -Encoding utf8) + "`n" }
+          }
+          if (-not $esito) { $esito = "Nessun file di esito: l'exe non e' partito (codice $($p.ExitCode))" }
+          Write-Host $esito
+          if ($p.ExitCode -ne 0 -or $esito -notmatch "TUTTO A POSTO") {
+            # l'errore va nelle annotazioni, cosi' si legge anche senza aprire il log completo
+            $msg = ($esito -replace "%", "%25" -replace "`r", "" -replace "`n", "%0A")
+            Write-Host "::error title=Prova dell'exe fallita::$msg"
+            exit 1
+          }
+          Remove-Item "$dest/prova_avvio.txt"
+          Get-ChildItem "$dest/app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+
+          Move-Item $dest "dist/RegistraLezione"
+          Compress-Archive -Path "dist/RegistraLezione" -DestinationPath "RegistraLezione-$v.zip"
+
+          # programma di installazione (un solo file .exe da scaricare e aprire)
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc "/DVersione=$v" installer.iss
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path RegistraLezione-Setup.exe)) { Write-Error "Installazione non creata"; exit 1 }
+
+          # Scripta Manent (edizione per chi ha un DSA): lo stesso pacchetto, con edizione.json accanto all'exe,
+          # l'exe col suo nome e la sua icona. La cartella app e' identica: l'aggiornamento vale per tutte e due.
+          Copy-Item "dist/RegistraLezione" "dist/ScriptaManent" -Recurse
+          Rename-Item "dist/ScriptaManent/Registra Lezione.exe" "Scripta Manent.exe"
+          Set-Content -Path "dist/ScriptaManent/edizione.json" -Value '{"edizione": "scripta"}' -Encoding ascii
+          try {
+            Invoke-WebRequest "https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe" -OutFile rcedit.exe
+            ./rcedit.exe "dist/ScriptaManent/Scripta Manent.exe" --set-icon grafica/scripta/icona.ico `
+              --set-version-string ProductName "Scripta Manent" --set-version-string FileDescription "Scripta Manent"
+            # rcedit riscrive l'exe e perde l'archivio di PyInstaller attaccato in fondo («Could not load PyInstaller's
+            # embedded PKG archive»): lo riattacco preso dall'exe originale
+            python tools/riattacca_pkg.py "dist/RegistraLezione/Registra Lezione.exe" "dist/ScriptaManent/Scripta Manent.exe"
+            if ($LASTEXITCODE -ne 0) { throw "archivio non riattaccato" }
+          } catch {
+            Write-Host "::warning title=Icona di Scripta Manent::non messa sull'exe ($_)"
+            Copy-Item "dist/RegistraLezione/Registra Lezione.exe" "dist/ScriptaManent/Scripta Manent.exe" -Force
+          }
+          # prova: Scripta Manent deve partire come la versione normale
+          $p2 = Start-Process -FilePath "dist/ScriptaManent/Scripta Manent.exe" -ArgumentList "--prova" -Wait -PassThru
+          $es2 = if (Test-Path "dist/ScriptaManent/prova_avvio.txt") { Get-Content "dist/ScriptaManent/prova_avvio.txt" -Raw -Encoding utf8 } else { "" }
+          if (Test-Path "dist/ScriptaManent/errore_avvio.txt") { $es2 += Get-Content "dist/ScriptaManent/errore_avvio.txt" -Raw -Encoding utf8 }
+          Write-Host "Scripta Manent: $es2"
+          if ($p2.ExitCode -ne 0 -or $es2 -notmatch "TUTTO A POSTO") {
+            Write-Host "::error title=Prova di Scripta Manent fallita::codice $($p2.ExitCode) $($es2 -replace "`r", '' -replace "`n", '%0A')"
+            exit 1
+          }
+          Remove-Item "dist/ScriptaManent/prova_avvio.txt" -ErrorAction SilentlyContinue
+          Get-ChildItem "dist/ScriptaManent/app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+          & $iscc "/DVersione=$v" "/DEdizione=scripta" installer.iss
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path ScriptaManent-Setup.exe)) { Write-Error "Installazione di Scripta Manent non creata"; exit 1 }
+
+          New-Item -ItemType Directory solo_app | Out-Null
+          Copy-Item app/* solo_app -Recurse
+          Get-ChildItem solo_app -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+          # i video della guida (circa 100 MB) a parte, in video.zip: il tasto Aggiorna li scarica solo se cambiano
+          # (impronta «video» in versione.json, vedi aggiorna.impronta_video). Paolo 01/11/2026: «ci mette un casino».
+          Compress-Archive -Path solo_app/interfaccia/video/* -DestinationPath video.zip
+          Remove-Item solo_app/interfaccia/video -Recurse -Force
+          Compress-Archive -Path solo_app/* -DestinationPath aggiornamento.zip
+          $imp = python -c "import sys; sys.path.insert(0, 'app'); import aggiorna; print(aggiorna.impronta_video('app/interfaccia/video'))"
+          if (-not $imp) { Write-Error "impronta dei video vuota"; exit 1 }
+          python -c "import json,sys; v=json.load(open('app/versione.json',encoding='utf-8')); v['video']=sys.argv[1]; json.dump(v,open('versione.json','w',encoding='utf-8'),ensure_ascii=False,indent=1)" $imp
+
+          $j = Get-Content app/versione.json -Raw -Encoding utf8 | ConvertFrom-Json
+          $link = "https://github.com/zonerosse/registra-lezione/releases/latest/download/RegistraLezione-Setup.exe"
+          $note = "Novità: $($j.novita)`n`n" +
+                  "Prima installazione: scarica e apri **[RegistraLezione-Setup.exe]($link)**.`n" +
+                  "Chi ha già il programma: tocca **Aggiorna** in fondo alla finestra."
+          Set-Content -Path note.md -Value $note -Encoding utf8
+          Get-Item "RegistraLezione-$v.zip", RegistraLezione-Setup.exe, ScriptaManent-Setup.exe, aggiornamento.zip, video.zip | Select-Object Name, Length
+
+      - name: Pubblica la release
+        if: steps.v.outputs.nuova == '1'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.CODICE_TOKEN }}
+          GH_REPO: zonerosse/registra-lezione
+        run: |
+          $v = "${{ steps.v.outputs.versione }}"
+          gh release create "${{ steps.v.outputs.tag }}" RegistraLezione-Setup.exe ScriptaManent-Setup.exe "RegistraLezione-$v.zip" aggiornamento.zip video.zip versione.json `
+            --title "Verba Manent IA $v" --notes-file note.md --target main
+          if ($LASTEXITCODE -ne 0) { exit 1 }
