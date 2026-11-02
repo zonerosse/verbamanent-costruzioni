@@ -1,0 +1,25 @@
+# Posizionamento dei siti di Paolo (02/11/2026). Sta qui, nel repository pubblico, perché nei repository privati
+# le azioni di GitHub sono a pagamento (come le costruzioni di Verba Manent). Nessun segreto: chiama soltanto il
+# gestionale DPD, che fa il giro a pezzi (Search Console + DataForSEO) e lavora solo se il giro della settimana non è finito.
+# NON lo crea tools/costruzioni_pubbliche.py: è a parte, non cancellarlo.
+name: Posizionamento
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  giro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Giro della settimana
+        run: |
+          for i in $(seq 1 30); do
+            R=$(curl -s -m 120 -X POST https://gestionale.delpiccolodiavolo.it/api/public/pos-aggiorna || echo '{}')
+            echo "pezzo $i: $R" | cut -c1-400
+            echo "$R" | grep -q '"finito":true' && exit 0
+            echo "$R" | grep -q '"ok":false' && exit 1
+            sleep 5
+          done
+          exit 1
