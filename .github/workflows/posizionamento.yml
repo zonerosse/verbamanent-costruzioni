@@ -11,12 +11,12 @@ permissions: {}
 jobs:
   giro:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - name: Giro della settimana
         run: |
-          for i in $(seq 1 30); do
-            R=$(curl -s -m 120 -X POST https://gestionale.delpiccolodiavolo.it/api/public/pos-aggiorna || echo '{}')
+          for i in $(seq 1 60); do
+            R=$(curl -s -m 280 -X POST https://gestionale.delpiccolodiavolo.it/api/public/pos-aggiorna || echo '{}')
             echo "pezzo $i: $R" | cut -c1-400
             echo "$R" | grep -q '"finito":true' && exit 0
             echo "$R" | grep -q '"ok":false' && exit 1
