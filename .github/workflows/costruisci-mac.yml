@@ -169,7 +169,11 @@ jobs:
           for A in "Verba Manent IA" "Scripta Manent"; do
             N=$(echo "$A" | tr -d ' ')
             mkdir -p "/tmp/dmg-$N" && cp -R "dist/$A.app" "/tmp/dmg-$N/" && ln -s /Applications "/tmp/dmg-$N/Applicazioni"
-            hdiutil create -volname "$A" -srcfolder "/tmp/dmg-$N" -ov -format UDZO "$N-${{ matrix.arch }}.dmg"
+            # «Resource busy» capita a volte sulle macchine Mac di GitHub (il disco e' occupato dal controllo antivirus): si riprova
+            for T in 1 2 3 4 5; do
+              hdiutil create -volname "$A" -srcfolder "/tmp/dmg-$N" -ov -format UDZO "$N-${{ matrix.arch }}.dmg" && break
+              [ $T = 5 ] && exit 1; echo "hdiutil occupato, riprovo ($T)"; sleep 15
+            done
             if [ -n "$FIRMA_ID" ]; then codesign --force --timestamp --sign "$FIRMA_ID" "$N-${{ matrix.arch }}.dmg"; fi
           done
           ls -la *.dmg
@@ -181,6 +185,7 @@ jobs:
           P8: ${{ secrets.ASC_KEY_P8 }}
         run: |
           mkdir -p esito-mac
+          if [ -z "$KEY_ID" ] || [ -z "$ISSUER" ] || [ -z "$P8" ]; then echo "Mancano i segreti ASC: app firmate ma senza il controllo di Apple" | tee esito-mac/notarizza.txt; exit 0; fi
           printf '%s' "$P8" > "$RUNNER_TEMP/AuthKey.p8"
           for D in *.dmg; do
             xcrun notarytool submit "$D" --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$KEY_ID" --issuer "$ISSUER" \
