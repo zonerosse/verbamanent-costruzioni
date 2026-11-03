@@ -1,0 +1,10 @@
+# Controllo a mano del Posizionamento (03/11/2026): una ricerca vera, per vedere cosa risponde DataForSEO. Nessun segreto.
+name: Posizionamento campione
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  c:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -s -m 120 -X POST "https://gestionale.delpiccolodiavolo.it/api/public/pos-aggiorna?campione=1"
