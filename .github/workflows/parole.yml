@@ -1,0 +1,40 @@
+# Ricerche di parole chiave con DataForSEO (04/11/2026). Sta qui, nel repository pubblico, perché nei repository
+# privati le azioni di GitHub sono a pagamento. Ogni cartella dentro parole/ è una ricerca: parole.txt (volumi) e
+# semi.txt (idee collegate). Si parte quando cambia uno di quei file, oppure a mano scegliendo la cartella.
+# Segreti del repository: DATAFORSEO_LOGIN e DATAFORSEO_PASSWORD (la «API password»). Mai stamparli.
+name: Parole chiave (DataForSEO)
+on:
+  workflow_dispatch:
+    inputs:
+      cartella: { description: "Cartella dentro parole/ (es. servizi-persona)", required: true }
+  push:
+    branches: [main]
+    paths: ["parole/*/parole.txt", "parole/*/semi.txt"]
+permissions:
+  contents: write
+concurrency: { group: parole, cancel-in-progress: false }
+jobs:
+  volumi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Chiede volumi e idee a DataForSEO
+        env:
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+          SCELTA: ${{ github.event.inputs.cartella }}
+        run: |
+          if [ -n "$SCELTA" ]; then DIRS="parole/$(basename "$SCELTA")"; else
+            DIRS=$(git diff --name-only HEAD~1 HEAD -- 'parole/*/parole.txt' 'parole/*/semi.txt' | xargs -r -n1 dirname | sort -u); fi
+          for d in $DIRS; do echo "== $d"; CARTELLA="$d" python parole/parole.py || echo "errore in $d"; done
+      - name: Salva i risultati nel repository
+        if: always()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A parole
+          git diff --cached --quiet || (git commit -m "Parole chiave: risultati DataForSEO" && git pull --rebase -q && git push)
