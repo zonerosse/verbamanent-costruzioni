@@ -237,7 +237,14 @@ jobs:
           fi
           mkdir -p esito && date -u > esito/quando.txt
           rm -rf /tmp/pub/esito && cp -R esito /tmp/pub/esito
+          # anche in esito-<app>: con VM e SM provate insieme restano tutte e due
+          rm -rf "/tmp/pub/esito-${{ inputs.app || 'verbamanent' }}" && cp -R esito "/tmp/pub/esito-${{ inputs.app || 'verbamanent' }}"
           cd /tmp/pub
-          git add -A esito
+          git add -A esito "esito-${{ inputs.app || 'verbamanent' }}"
           git commit -q -m "Prova iPhone $(date -u +%d/%m\ %H:%M)" || true
-          git push -q origin HEAD:iphone-prove
+          # l'altra prova (VM o SM) puo' aver salvato un attimo prima: si riparte dalla sua e si riprova
+          for i in 1 2 3 4 5; do
+            git push -q origin HEAD:iphone-prove && break
+            sleep $((i * 5)); git fetch -q origin iphone-prove && git reset -q --soft origin/iphone-prove
+            git add -A esito "esito-${{ inputs.app || 'verbamanent' }}"; git commit -q -m "Prova iPhone $(date -u +%d/%m\ %H:%M)" || true
+          done
