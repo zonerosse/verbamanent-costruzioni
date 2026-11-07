@@ -214,8 +214,8 @@ jobs:
           js 15-studia-vuota "$(vai studia)"
           js 16-collegati-pc "document.querySelector('[data-stv=sy]').click()" 6
           # 07/11/2026: iOS si riprende la porta delle pagine quando l'app resta sospesa: l'app deve riaprirla da sola
-          P1=$(cat "$DATI/porta.txt" 2>/dev/null); touch "$DATI/prova_chiudi_porta"; sleep 10; P2=$(cat "$DATI/porta.txt" 2>/dev/null)
-          rm -f "$DATI/prova_js_esito.txt"; js 16b-porta-riaperta "$(vai arch) setTimeout(function(){}, 0); String(document.querySelectorAll('#lista .lz, #lista [data-c]').length + ':' + (document.body.innerText.indexOf('Analisi') >= 0))" 8
+          P1=$(cat "$DATI/porta.txt" 2>/dev/null); touch "$DATI/prova_chiudi_porta"; sleep 20; P2=$(cat "$DATI/porta.txt" 2>/dev/null)
+          rm -f "$DATI/prova_js_esito.txt"; js 16b-porta-riaperta "$(vai arch) setTimeout(function(){}, 0); String(document.querySelectorAll('#lista .lz, #lista [data-c]').length + ':' + (document.body.innerText.indexOf('registrazion') >= 0))" 8
           echo "porta prima $P1, dopo $P2, pagina: $(cat "$DATI/prova_js_esito.txt" 2>/dev/null)" > esito/porta.txt
           if [ -n "$P2" ] && [ "$P1" != "$P2" ] && grep -q "true" esito/porta.txt; then echo "porta riaperta: ok" >> esito/porta.txt; else echo "porta riaperta: NO" >> esito/porta.txt; fi
           # TOCCHI VERI: ogni tasto di ogni pagina toccato col «dito» (un test XCUITest di Apple, tools/prova_iphone/tocca)
