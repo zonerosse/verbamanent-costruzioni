@@ -192,14 +192,13 @@ jobs:
           New-Item -ItemType Directory solo_app | Out-Null
           Copy-Item app/* solo_app -Recurse
           Get-ChildItem solo_app -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
-          # i video della guida (circa 100 MB) a parte, in video.zip: il tasto Aggiorna li scarica solo se cambiano
-          # (impronta «video» in versione.json, vedi aggiorna.impronta_video). Paolo 01/11/2026: «ci mette un casino».
-          Compress-Archive -Path solo_app/interfaccia/video/* -DestinationPath video.zip
+          # i video della guida uno per uno (09/11/2026, Paolo: «gli aggiornamenti sono troppo pesanti»): stanno nel ramo
+          # «video-guida» e versione.json dice quali servono al PC e al Mac (video_file); Aggiorna scarica solo i cambiati.
           Remove-Item solo_app/interfaccia/video -Recurse -Force
           Compress-Archive -Path solo_app/* -DestinationPath aggiornamento.zip
-          $imp = python -c "import sys; sys.path.insert(0, 'app'); import aggiorna; print(aggiorna.impronta_video('app/interfaccia/video'))"
-          if (-not $imp) { Write-Error "impronta dei video vuota"; exit 1 }
-          python -c "import json,sys; v=json.load(open('app/versione.json',encoding='utf-8')); v['video']=sys.argv[1]; json.dump(v,open('versione.json','w',encoding='utf-8'),ensure_ascii=False,indent=1)" $imp
+          Copy-Item app/versione.json versione.json
+          python tools/video_guida.py elenco app/interfaccia/video pc versione.json
+          if ($LASTEXITCODE -ne 0) { Write-Error "elenco dei video della guida non fatto"; exit 1 }
 
           $j = Get-Content app/versione.json -Raw -Encoding utf8 | ConvertFrom-Json
           $link = "https://github.com/zonerosse/registra-lezione/releases/latest/download/RegistraLezione-Setup.exe"
@@ -207,7 +206,7 @@ jobs:
                   "Prima installazione: scarica e apri **[RegistraLezione-Setup.exe]($link)**.`n" +
                   "Chi ha già il programma: tocca **Aggiorna** in fondo alla finestra."
           Set-Content -Path note.md -Value $note -Encoding utf8
-          Get-Item "RegistraLezione-$v.zip", RegistraLezione-Setup.exe, ScriptaManent-Setup.exe, aggiornamento.zip, video.zip | Select-Object Name, Length
+          Get-Item "RegistraLezione-$v.zip", RegistraLezione-Setup.exe, ScriptaManent-Setup.exe, aggiornamento.zip | Select-Object Name, Length
 
       - name: Pubblica la release
         if: steps.v.outputs.nuova == '1'
@@ -217,6 +216,10 @@ jobs:
           GH_REPO: zonerosse/registra-lezione
         run: |
           $v = "${{ steps.v.outputs.versione }}"
-          gh release create "${{ steps.v.outputs.tag }}" RegistraLezione-Setup.exe ScriptaManent-Setup.exe "RegistraLezione-$v.zip" aggiornamento.zip video.zip versione.json `
+          # prima i video della guida nel ramo «video-guida» (solo quelli nuovi), poi la release che li elenca
+          $env:VIDEO_TOKEN = $env:GH_TOKEN
+          python tools/video_guida.py carica app/interfaccia/video pc
+          if ($LASTEXITCODE -ne 0) { Write-Error "video della guida non caricati"; exit 1 }
+          gh release create "${{ steps.v.outputs.tag }}" RegistraLezione-Setup.exe ScriptaManent-Setup.exe "RegistraLezione-$v.zip" aggiornamento.zip versione.json `
             --title "Verba Manent IA $v" --notes-file note.md --target main
           if ($LASTEXITCODE -ne 0) { exit 1 }

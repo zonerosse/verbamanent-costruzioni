@@ -47,12 +47,11 @@ jobs:
       - name: Il programma per il telefono
         run: |
           bash tools/prova_android/prepara_rl.sh /tmp/rl
-          # i video della guida (circa 37 MB) a parte: l'app li scarica solo se cambiano (01/11/2026: 41 -> 4 MB)
+          # i video della guida a parte, uno per uno (09/11/2026): l'app scarica solo quelli cambiati (ramo «video-guida»)
           (cd /tmp/rl && zip -qr -X "$GITHUB_WORKSPACE/contenuto.zip" . -x 'interfaccia/video/*')
-          (cd /tmp/rl/interfaccia/video && zip -qr -X "$GITHUB_WORKSPACE/video-android.zip" .)
-          python3 -c "import sys; sys.path.insert(0, 'app'); import aggiorna; print(aggiorna.impronta_video('/tmp/rl/interfaccia/video'))" > impronta_video.txt
-          [ -s impronta_video.txt ] || { echo "impronta dei video vuota"; exit 1; }
-          ls -la contenuto.zip video-android.zip
+          echo '{}' > video_elenco.json
+          python3 tools/video_guida.py elenco /tmp/rl/interfaccia/video telefono video_elenco.json
+          ls -la contenuto.zip
       - name: Prova dell'app senza emulatore
         run: |
           pip install -q numpy pillow fpdf2==2.8.9 imageio-ffmpeg onnxruntime
@@ -77,8 +76,8 @@ jobs:
               sys.exit("Alza «contenuto» in android/versione.json")
           pub.update(versione=nuova["versione"], contenuto=nuova["contenuto"], novita=nuova["novita"], novita_en=nuova["novita_en"],
                      zip="https://github.com/zonerosse/registra-lezione/raw/android-app/contenuto.zip",
-                     video=open("impronta_video.txt").read().strip(),
-                     zip_video="https://github.com/zonerosse/registra-lezione/raw/android-app/video-android.zip")
+                     # i video uno per uno: «video» e «zip_video» vuoti, cosi' l'app di prima non scarica piu' i 48 MB
+                     video="", zip_video="", **{k: v for k, v in json.load(open("video_elenco.json")).items() if k != "video"})
           # solo l'app scelta vede l'aggiornamento: l'altra resta com'e' (prendera' tutto con il suo prossimo)
           ed = "${{ inputs.edizione }}" or "entrambe"
           if ed in ("entrambe", "verba"):
@@ -88,9 +87,9 @@ jobs:
               pub.update(novita_sm=nuova.get("novita_sm") or nuova["novita"], novita_sm_en=nuova.get("novita_sm_en") or nuova["novita_en"])
           json.dump(pub, open("/tmp/pub/versione-android.json", "w"), ensure_ascii=False, indent=1)
           PY
+          VIDEO_TOKEN="$RILASCI_TOKEN" python3 tools/video_guida.py carica /tmp/rl/interfaccia/video telefono
           cp contenuto.zip /tmp/pub/contenuto.zip
-          cp video-android.zip /tmp/pub/video-android.zip
           cd /tmp/pub
-          git add -f contenuto.zip video-android.zip versione-android.json
+          git add -f contenuto.zip versione-android.json
           git commit -q -m "Aggiornamento leggero Android $(python3 -c "import json;print(json.load(open('versione-android.json'))['versione'])")"
           git push origin HEAD:android-app
