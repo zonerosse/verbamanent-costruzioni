@@ -17,7 +17,6 @@ jobs:
           repository: zonerosse/registra-lezione-codice
           ref: ${{ inputs.ref || 'main' }}
           token: ${{ secrets.CODICE_TOKEN }}
-        with: {ref: "${{ inputs.ref }}"}
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - run: pip install -r requirements.txt
