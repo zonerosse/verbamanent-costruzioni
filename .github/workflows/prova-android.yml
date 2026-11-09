@@ -105,7 +105,7 @@ jobs:
           rm -rf /tmp/pubgit && mkdir /tmp/pubgit && cd /tmp/pubgit && git init -q -b android-app
           cp /tmp/agg/* .
           git add -f contenuto.zip versione-android.json
-          git commit -q -m "App Android $(python3 -c "import json;print(json.load(open('versione-android.json'))['versione'])")"
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -q -m "App Android $(python3 -c "import json;print(json.load(open('versione-android.json'))['versione'])")"
           git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/zonerosse/registra-lezione.git" android-app
           cd "$GITHUB_WORKSPACE"
       - name: Riconoscitore vocale per la prova sul telefono simulato (scaricato una volta, poi tenuto da GitHub)
