@@ -12,6 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       tutto: { description: "Manda tutte le pagine (sì/no)", default: "no" }
+      dal: { description: "Oppure: pagine cambiate da questa data (AAAA-MM-GG)", default: "" }
 permissions: {}
 concurrency: { group: indexnow-dpd, cancel-in-progress: false }
 jobs:
@@ -33,9 +34,10 @@ jobs:
         uses: actions/cache/restore@v4
         with: { path: .indexnow, key: "indexnow-dpd-${{ steps.b.outputs.x }}", lookup-only: true }
       - name: Leggi le sitemap e manda le URL
-        if: steps.c.outputs.cache-hit != 'true' || github.event.inputs.tutto == 'sì'
+        if: steps.c.outputs.cache-hit != 'true' || github.event.inputs.tutto == 'sì' || github.event.inputs.dal != ''
         env:
           TUTTO: ${{ github.event.inputs.tutto == 'sì' }}
+          DAL: ${{ github.event.inputs.dal }}
         run: |
           set -e
           for L in "" "en/" "de/"; do curl -sS --retry 3 --retry-delay 10 "https://$HOST/${L}sitemap.xml" -o "sitemap-${L%/}.xml" || true; done
@@ -43,7 +45,7 @@ jobs:
           import glob, json, os, re, sys, datetime
           from zoneinfo import ZoneInfo
           oggi = datetime.datetime.now(ZoneInfo("Europe/Rome")).date()
-          soglia = (oggi - datetime.timedelta(days=1)).isoformat()
+          soglia = os.environ.get("DAL") or (oggi - datetime.timedelta(days=1)).isoformat()
           tutto = os.environ.get("TUTTO") == "true"
           urls = []
           for f in sorted(glob.glob("sitemap-*.xml")):
