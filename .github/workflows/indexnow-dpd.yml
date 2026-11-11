@@ -1,0 +1,69 @@
+# IndexNow per delpiccolodiavolo.it (11/11/2026). Sta qui, nel repository pubblico, perché nei repository privati
+# le azioni di GitHub sono a pagamento (come Posizionamento e Parole chiave). Nessun segreto: la chiave IndexNow è
+# pubblica (sta nel sito, /6ddc5a9e8d861ef5b8263d15a72183d9.txt).
+# Ogni ora guarda l'intestazione X-Build della sitemap (il commit pubblicato da Cloudflare): se è un commit nuovo,
+# manda a IndexNow solo le pagine con lastmod di oggi o di ieri, una volta sola per pubblicazione (memoria nella cache
+# di GitHub). A mano («Run workflow» con «tutto») manda tutte le pagine delle tre lingue.
+# NON lo crea tools/costruzioni_pubbliche.py: è a parte, non cancellarlo.
+name: IndexNow delpiccolodiavolo.it
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      tutto: { description: "Manda tutte le pagine (sì/no)", default: "no" }
+permissions: {}
+concurrency: { group: indexnow-dpd, cancel-in-progress: false }
+jobs:
+  segnala:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HOST: delpiccolodiavolo.it
+      KEY: 6ddc5a9e8d861ef5b8263d15a72183d9
+    steps:
+      - name: Commit pubblicato adesso
+        id: b
+        run: |
+          X=$(curl -sSI --retry 2 "https://$HOST/sitemap.xml" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-build"{print $2}')
+          echo "Online: ${X:-(nessun X-Build)}"
+          echo "x=${X:-nessuno}" >> "$GITHUB_OUTPUT"
+      - name: Già segnalato?
+        id: c
+        uses: actions/cache/restore@v4
+        with: { path: .indexnow, key: "indexnow-dpd-${{ steps.b.outputs.x }}", lookup-only: true }
+      - name: Leggi le sitemap e manda le URL
+        if: steps.c.outputs.cache-hit != 'true' || github.event.inputs.tutto == 'sì'
+        env:
+          TUTTO: ${{ github.event.inputs.tutto == 'sì' }}
+        run: |
+          set -e
+          for L in "" "en/" "de/"; do curl -sS --retry 3 --retry-delay 10 "https://$HOST/${L}sitemap.xml" -o "sitemap-${L%/}.xml" || true; done
+          python3 - <<'PY' > payload.json
+          import glob, json, os, re, sys, datetime
+          from zoneinfo import ZoneInfo
+          oggi = datetime.datetime.now(ZoneInfo("Europe/Rome")).date()
+          soglia = (oggi - datetime.timedelta(days=1)).isoformat()
+          tutto = os.environ.get("TUTTO") == "true"
+          urls = []
+          for f in sorted(glob.glob("sitemap-*.xml")):
+              xml = open(f, encoding="utf-8").read()
+              for blocco in re.findall(r"<url>(.*?)</url>", xml, re.S):
+                  loc = re.search(r"<loc>(.*?)</loc>", blocco); mod = re.search(r"<lastmod>(.*?)</lastmod>", blocco)
+                  if loc and (tutto or (mod and mod.group(1)[:10] >= soglia)):
+                      urls.append(loc.group(1).strip())
+          urls = sorted(set(urls))[:10000]
+          print(f"URL da segnalare: {len(urls)}", file=sys.stderr)
+          for u in urls: print("  " + u, file=sys.stderr)
+          print(json.dumps({"host": os.environ["HOST"], "key": os.environ["KEY"], "keyLocation": f"https://{os.environ['HOST']}/{os.environ['KEY']}.txt", "urlList": urls}))
+          PY
+          N=$(python3 -c "import json;print(len(json.load(open('payload.json'))['urlList']))")
+          mkdir -p .indexnow && date -u > .indexnow/fatto
+          if [ "$N" -eq 0 ]; then echo "Nessuna pagina cambiata, niente da segnalare."; exit 0; fi
+          CODE=$(curl -sS -o risposta.txt -w '%{http_code}' -X POST "https://api.indexnow.org/IndexNow" -H "Content-Type: application/json; charset=utf-8" --data @payload.json)
+          echo "Risposta: $CODE"; cat risposta.txt || true
+          if [ "$CODE" != "200" ] && [ "$CODE" != "202" ]; then rm -rf .indexnow; exit 1; fi
+      - name: Ricorda che questa pubblicazione è segnalata
+        if: steps.c.outputs.cache-hit != 'true' && steps.b.outputs.x != 'nessuno' && hashFiles('.indexnow/fatto') != ''
+        uses: actions/cache/save@v4
+        with: { path: .indexnow, key: "indexnow-dpd-${{ steps.b.outputs.x }}" }
